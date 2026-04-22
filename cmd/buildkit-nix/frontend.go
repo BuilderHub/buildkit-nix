@@ -73,7 +73,18 @@ func frontendBuild(nixImage string) client.BuildFunc {
 			dockerui.WithInternalName("local context"),
 		)
 
-		runSt := nixImageSt.Run(
+		opts := c.BuildOpts().Opts
+		nixRunSt := nixImageSt
+		if goprivate := opts["build-arg:GOPRIVATE"]; goprivate != "" {
+			nixRunSt = nixRunSt.AddEnv("GOPRIVATE", goprivate)
+		}
+		if v := opts["build-arg:BUILDKIT_NIX_SANDBOX_RELAXED"]; v == "1" || v == "true" {
+			nixRunSt = nixRunSt.AddEnv("BUILDKIT_NIX_SANDBOX_RELAXED", "1")
+		}
+
+		runSt := nixRunSt.Run(
+			llb.AddSecret(pathNixNetrc, llb.SecretID(secretIDNetrc), llb.SecretOptional),
+			llb.AddSecret(pathNixAccessTokensFile, llb.SecretID(secretIDNixAccessTokens), llb.SecretOptional),
 			llb.AddMount("/context", localCtxSt),
 			llb.AddMount("/dockerfile", localDfSt),
 			llb.AddMount("/self", *selfImageSt),

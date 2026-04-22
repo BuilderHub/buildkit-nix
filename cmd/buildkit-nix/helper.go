@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/containerd/containerd/archive"
@@ -77,6 +78,7 @@ func helperAction(cmd *cobra.Command, args []string) error {
 	nixBuildCmd.Dir = "/context"
 	nixBuildCmd.Stderr = cmd.OutOrStderr()
 	nixBuildCmd.Stdout = nixBuildCmd.Stderr
+	nixBuildCmd.Env = nixBuildEnv()
 	logrus.Infof("Running %v (flake mode: %v)", nixBuildCmd.Args, flakeMode)
 	if err := nixBuildCmd.Run(); err != nil {
 		return err
@@ -181,4 +183,63 @@ func resetTimestamp(p string, t time.Time) error {
 		return nil
 	}
 	return filepath.Walk(p, walk)
+}
+
+// nixBuildEnv extends the process environment so Nix can fetch private inputs: optional BuildKit
+// secrets `netrc` and `nix_access_tokens` (see secrets.go and README).
+func nixBuildEnv() []string {
+	base := os.Environ()
+	var cfgLines []string
+
+	if b, err := os.ReadFile(pathNixAccessTokensFile); err == nil {
+		if rhs := strings.TrimSpace(string(b)); rhs != "" {
+			cfgLines = append(cfgLines, "access-tokens = "+rhs)
+		}
+	}
+	if fi, err := os.Stat(pathNixNetrc); err == nil && !fi.IsDir() {
+		cfgLines = append(cfgLines,
+			"netrc-file = "+pathNixNetrc,
+			"extra-sandbox-paths = "+pathNixNetrc,
+		)
+	}
+	if os.Getenv("BUILDKIT_NIX_SANDBOX_RELAXED") == "1" {
+		cfgLines = append(cfgLines, "sandbox = relaxed")
+	}
+	if len(cfgLines) == 0 {
+		return base
+	}
+	merged := strings.TrimSpace(strings.Join(cfgLines, "\n"))
+	existing, _ := getenvFromEnviron(base, "NIX_CONFIG")
+	if existing != "" {
+		merged = existing + "\n" + merged
+	}
+	return setenvInEnviron(base, "NIX_CONFIG", merged)
+}
+
+func getenvFromEnviron(env []string, k string) (string, bool) {
+	sep := k + "="
+	for _, e := range env {
+		if strings.HasPrefix(e, sep) {
+			return strings.TrimPrefix(e, sep), true
+		}
+	}
+	return "", false
+}
+
+func setenvInEnviron(env []string, k, v string) []string {
+	sep := k + "="
+	out := make([]string, 0, len(env)+1)
+	replaced := false
+	for _, e := range env {
+		if strings.HasPrefix(e, sep) {
+			out = append(out, k+"="+v)
+			replaced = true
+		} else {
+			out = append(out, e)
+		}
+	}
+	if !replaced {
+		out = append(out, k+"="+v)
+	}
+	return out
 }
